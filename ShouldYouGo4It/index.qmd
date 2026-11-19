@@ -1,0 +1,26 @@
+---
+title: "Should You Go 4 It?"
+---
+
+# Introduction
+
+It is Super Bowl LVI at SoFi Stadium. The Cincinnati Bengals trail the Los Angeles Rams 23-20. With 43 seconds remaining, the Bengals face **4th & 1** on the Rams' 49-yard line. If they convert, they keep their drive alive. If they fail, the Rams take over and can kneel out the clock. A pass play is called, but Rams defensive lineman Aaron Donald breaks through the offensive line, pressuring Bengals quarterback Joe Burrow to throw an incomplete pass. The Bengals' season is over. The Rams take the field in victory formation.
+
+Fourth down situations can require teams to choose from attempting a conversion, attempting a field goal, or punting. Some of the factors that go into the decision are field position, yards needed, score, time remaining, and the number of timeouts the team has. A successful attempt can keep a team's drive alive, while an unsuccessful attempt could end a team's season.
+
+This report uses NFL play-by-play data from 2015 through 2025 to examine how frequently teams' fourth down decisions agreed with model recommendations, how agreement has changed over time, and which situations were associated with teams choosing another option. The recommendations compare the estimated chances of winning after going for it, attempting a field goal, or punting. These recommendations provide a benchmark for evaluating decisions, they do not guarantee a successful outcome.
+
+# Methods
+
+NFL play-by-play data for the 2015 - 2025 seasons were obtained from the ["nflverse" repository](https://github.com/nflverse) using R. The "nfl4th" package provides estimated win probabilities for going for it on fourth down, attempting a field goal, and punting. For each eligible fourth down play, the option with the highest estimated win probability was classified as the model-recommended decision and compared to the teams' actual choices. The analysis covers 11 completed seasons, excluding the ongoing 2026 season. Per the ["nfl4th" repository](https://github.com/nflverse/nfl4th), the model does not account for kickers, injuries, or short-yardage strength. As of 2020, the model predicts late 4th & 8-10 attempts to convert more often. A blocked field goal returned for a touchdown is treated as the other team takes over at the spot of the kick.
+
+```{r}
+library(nfl4th)
+library(nflreadr)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(gt)
+
+
+```
