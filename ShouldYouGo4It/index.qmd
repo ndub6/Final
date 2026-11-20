@@ -21,6 +21,36 @@ library(dplyr)
 library(ggplot2)
 library(plotly)
 library(gt)
-
-
+library(knitr)
 ```
+
+```{r}
+# Make NFL_Raw with 2015 - 2025 Seasons
+NFL_Raw <- load_4th_pbp(seasons = 2015:2025)
+# Make Fourth_Down with 4th Down Scenarios for 2015 - 2025 Seasons
+Fourth_Down <- NFL_Raw |> filter(down == 4)
+
+# Number of 4th Down records by season and game type
+Fourth_Down |> count(season, season_type)
+
+# Types of 4th Down records
+Fourth_Down |> count(play_type, sort = TRUE)
+
+# Missing model estimates
+Fourth_Down |> 
+  summarise(Records = n(), 
+  Missing_Go = sum(is.na(go_wp)),
+  Missing_Field_Goal = sum(is.na(fg_wp)),
+  Missing_Punt = sum(is.na(punt_wp)))
+
+Fourth_Down <- Fourth_Down |> 
+  mutate(Actual_Decision = case_when(play_type %in% c("pass","run") ~ "going for it", play_type == "field_goal" ~ "field_goal_attempt", play_type == "punt" ~ "punt", TRUE ~ "other"))
+
+Fourth_Down |> 
+  count(Actual_Decision, sort = TRUE)
+
+Fourth_Down |>
+  count(Actual_Decision, play_type, sort = TRUE)
+```
+
+All records identified as fourth down were retained. Plays were classified as "going for it" if the recorded play type was a pass or run, as a "field goal attempt," or as a "punt." All other records were classified as "other."
