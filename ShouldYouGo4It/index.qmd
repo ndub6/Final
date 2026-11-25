@@ -44,7 +44,7 @@ Fourth_Down |>
   Missing_Punt = sum(is.na(punt_wp)))
 
 Fourth_Down <- Fourth_Down |> 
-  mutate(Actual_Decision = case_when(play_type %in% c("pass","run") ~ "going for it", play_type == "field_goal" ~ "field_goal_attempt", play_type == "punt" ~ "punt", TRUE ~ "other"))
+  mutate(Actual_Decision = case_when(play_type %in% c("pass","run") ~ "going for it", play_type == "field_goal" ~ "field goal attempt", play_type == "punt" ~ "punt", TRUE ~ "other"))
 
 Fourth_Down |> 
   count(Actual_Decision, sort = TRUE)
@@ -54,3 +54,789 @@ Fourth_Down |>
 ```
 
 All records identified as fourth down were retained. Plays were classified as "going for it" if the recorded play type was a pass or run, as a "field goal attempt," or as a "punt." All other records were classified as "other."
+
+```{r}
+Fourth_Down <- Fourth_Down |>
+  mutate(
+    Actual_Decision = case_when(
+      play_type %in% c("pass", "run") ~ "going for it",
+      play_type == "field_goal" ~ "field goal attempt",
+      play_type == "punt" ~ "punt",
+      TRUE ~ "other"
+    ),
+
+    Best_WP = pmax(go_wp, fg_wp, punt_wp, na.rm = TRUE),
+
+    Number_Best = rowSums(
+      cbind(
+        near(go_wp, Best_WP),
+        near(fg_wp, Best_WP),
+        near(punt_wp, Best_WP)
+      ),
+      na.rm = TRUE
+    ),
+
+    Model_Decision = case_when(
+      is.na(Best_WP) ~ "incomplete estimates",
+      Number_Best > 1 ~ "tie",
+      near(go_wp, Best_WP) ~ "going for it",
+      near(fg_wp, Best_WP) ~ "field goal attempt",
+      near(punt_wp, Best_WP) ~ "punt",
+      TRUE ~ NA_character_
+    ),
+
+    Actual_WP = case_when(
+      Actual_Decision == "going for it" ~ go_wp,
+      Actual_Decision == "field goal attempt" ~ fg_wp,
+      Actual_Decision == "punt" ~ punt_wp,
+      TRUE ~ NA_real_
+    ),
+
+    Agreement = case_when(
+      Actual_Decision == "other" ~ NA,
+      is.na(Best_WP) | is.na(Actual_WP) ~ NA,
+      TRUE ~ near(Actual_WP, Best_WP)
+    )
+  )
+
+# How often the model recommends each option
+Fourth_Down |>
+  count(Model_Decision, sort = TRUE)
+
+# Compare actual choices with recommendations
+Fourth_Down |>
+  count(Actual_Decision, Agreement, sort = TRUE)
+```
+
+```{r}
+# Check which estimates are missing
+Fourth_Down |>
+  count(
+    Missing_Go = is.na(go_wp),
+    Missing_Field_Goal = is.na(fg_wp),
+    Missing_Punt = is.na(punt_wp),
+    sort = TRUE
+  )
+
+# Check missing play types
+Fourth_Down |>
+  filter(Model_Decision == "incomplete estimates") |>
+  count(Actual_Decision, play_type, sort = TRUE)
+```
+
+```{r}
+Season_Agreement <- Fourth_Down |>
+  group_by(season) |>
+  summarise(
+    Total_Records = n(),
+    Evaluated = sum(!is.na(Agreement)),
+    Excluded = sum(is.na(Agreement)),
+    Agreed = sum(Agreement, na.rm = TRUE),
+    Agreement_Percent = 100 * Agreed / Evaluated,
+    .groups = "drop"
+  )
+
+Season_Agreement
+```
+
+```{r}
+Agreement_Plot <- ggplot(
+  Season_Agreement,
+  aes(x = season, y = Agreement_Percent)
+) +
+  geom_line(color = "RED", linewidth = 1) +
+  geom_point(color = "RED", size = 2) +
+  scale_x_continuous(breaks = 2015:2025) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "NFL Fourth-Down Agreement with Model Recommendations",
+    subtitle = "Among Decisions with Evaluable Actual Choices",
+    x = "Season",
+    y = "Decisions Agreeing with the Model",
+    caption = "Source: nflverse and nfl4th"
+  ) 
+
+plotly::ggplotly(Agreement_Plot)
+```
+
+# Results
+
+Among evaluated fourth-down decisions, agreement with model recommendations increased from 65.6% in 2015 to 73.5% in 2025, a increase of 7.9 percentage points. Although agreement generally increased over the study period, the pattern included several year-to-year declines, notably in 2018, 2020, and 2024. These percentages reflect comparisons among available model estimates and exclude records whose actual choices could not be evaluated.
+
+```{r}
+Recommendation_Agreement <- Fourth_Down |>
+  filter(
+    !is.na(Agreement),
+    Model_Decision %in% c(
+      "going for it", "field goal attempt", "punt"
+    )
+  ) |>
+  group_by(season, Model_Decision) |>
+  summarise(
+    Evaluated = n(),
+    Agreed = sum(Agreement),
+    Agreement_Percent = 100 * Agreed / Evaluated,
+    .groups = "drop"
+  )
+
+Recommendation_Plot <- ggplot(
+  Recommendation_Agreement,
+  aes(
+    x = season,
+    y = Agreement_Percent,
+    color = Model_Decision
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2015:2025) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "Did Teams Follow Fourth-Down Recommendations?",
+    x = "Season",
+    y = "Decisions Agreeing with the Model",
+    color = "Model recommendation"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Recommendation_Plot)
+```
+
+Agreement differed substantially by the model-recommended option. Teams almost always punted when the model recommended punting and usually attempted a field goal when it recommended one. In contrast, teams went for it on approximately 25% of evaluated plays where the model recommended doing so in 2015, increasing to approximately 47% in 2025. Despite this increase, teams still chose another option on more than half of such plays in 2025.
+
+```{r}
+Go_Recommendations <- Fourth_Down |>
+  filter(
+    Model_Decision == "going for it",
+    !is.na(Agreement)
+  ) |>
+  mutate(
+    Declined = Actual_Decision != "going for it",
+
+    Yards_Needed = cut(
+      ydstogo,
+      breaks = c(0, 1, 3, 5, 10, Inf),
+      labels = c("1", "2–3", "4–5", "6–10", "11+"),
+      include.lowest = TRUE
+    ),
+
+    Field_Position = cut(
+      yardline_100,
+      breaks = c(0, 20, 50, 80, 100),
+      labels = c(
+        "Opponent 1–20",
+        "Opponent 21–50",
+        "Own 20–49",
+        "Own 1–19"
+      ),
+      include.lowest = TRUE
+    )
+  )
+
+Go_Declined_Summary <- Go_Recommendations |>
+  filter(
+    !is.na(Yards_Needed),
+    !is.na(Field_Position)
+  ) |>
+  group_by(Field_Position, Yards_Needed) |>
+  summarise(
+    Recommendations = n(),
+    Went_For_It = sum(Actual_Decision == "going for it"),
+    Field_Goals = sum(Actual_Decision == "field goal attempt"),
+    Punts = sum(Actual_Decision == "punt"),
+    Declined = sum(Declined),
+    Declined_Percent = 100 * Declined / Recommendations,
+    .groups = "drop"
+  )
+
+Go_Declined_Summary
+```
+
+```{r}
+Declined_Plot <- ggplot(
+  Go_Declined_Summary,
+  aes(
+    x = Yards_Needed,
+    y = Field_Position,
+    fill = Declined_Percent,
+    text = paste0(
+      "Field position: ", Field_Position,
+      "<br>Yards needed: ", Yards_Needed,
+      "<br>Evaluated recommendations: ", Recommendations,
+      "<br>Declined: ", Declined,
+      "<br>Declined percentage: ",
+      round(Declined_Percent, 1), "%",
+      "<br>Field-goal attempts: ", Field_Goals,
+      "<br>Punts: ", Punts
+    )
+  )
+) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(
+    low = "#fff5f0",
+    high = "#99000d",
+    limits = c(0, 100),
+    name = "Declined (%)"
+  ) +
+  labs(
+    title = "Where Did Teams Decline Go-for-It Recommendations?",
+    subtitle = "Evaluated Decisions Pooled Across 2015–2025",
+    x = "Yards Needed for a First Down",
+    y = "Field Position",
+    caption = "Source: nflverse and nfl4th"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Declined_Plot, tooltip = "text")
+```
+
+Among evaluated plays where the model recommended going for it, teams’ choices varied by field position and yards needed. Teams declined recommendations more frequently on their own side of the field. In the opponent’s territory, they were more likely to follow recommendations when only one yard was needed. Declining generally became more common as the distance increased from one yard to six–ten yards, but decreased for attempts requiring eleven or more yards.
+
+```{r}
+Go_Score_Time <- Go_Recommendations |>
+  filter(
+    qtr %in% 1:4,
+    !is.na(score_differential),
+    !is.na(game_seconds_remaining)
+  ) |>
+  mutate(
+    Score_Status = case_when(
+      score_differential < 0 ~ "Trailing",
+      score_differential == 0 ~ "Tied",
+      score_differential > 0 ~ "Leading"
+    ),
+
+    Score_Status = factor(
+      Score_Status,
+      levels = c("Trailing", "Tied", "Leading")
+    ),
+
+    Time_Remaining = case_when(
+      game_seconds_remaining > 1800 ~ "First half",
+      game_seconds_remaining > 900 ~ "Third quarter",
+      game_seconds_remaining > 300 ~ "Fourth quarter: >5 min",
+      TRUE ~ "Final 5 minutes"
+    ),
+
+    Time_Remaining = factor(
+      Time_Remaining,
+      levels = c(
+        "First half",
+        "Third quarter",
+        "Fourth quarter: >5 min",
+        "Final 5 minutes"
+      )
+    )
+  )
+
+Score_Time_Summary <- Go_Score_Time |>
+  group_by(Score_Status, Time_Remaining) |>
+  summarise(
+    Recommendations = n(),
+    Went_For_It = sum(Actual_Decision == "going for it"),
+    Field_Goals = sum(Actual_Decision == "field goal attempt"),
+    Punts = sum(Actual_Decision == "punt"),
+    Declined = sum(Declined),
+    Declined_Percent = 100 * Declined / Recommendations,
+    .groups = "drop"
+  )
+
+Score_Time_Summary
+```
+
+```{r}
+Score_Time_Plot <- ggplot(
+  Score_Time_Summary,
+  aes(
+    x = Time_Remaining,
+    y = Declined_Percent,
+    fill = Score_Status,
+    text = paste0(
+      "Score status: ", Score_Status,
+      "<br>Game period: ", Time_Remaining,
+      "<br>Evaluated recommendations: ", Recommendations,
+      "<br>Went for it: ", Went_For_It,
+      "<br>Field-goal attempts: ", Field_Goals,
+      "<br>Punts: ", Punts,
+      "<br>Declined: ", round(Declined_Percent, 1), "%"
+    )
+  )
+) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    labels = function(x) paste0(x, "%")
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Trailing" = "#D55E00",
+      "Tied" = "#777777",
+      "Leading" = "#0072B2"
+    )
+  ) +
+  labs(
+    title = "When Did Teams Decline Go-for-It Recommendations?",
+    subtitle = "Evaluated Regulation Decisions, 2015–2025",
+    x = NULL,
+    y = "Recommendations Declined",
+    fill = "Score Status"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Score_Time_Plot, tooltip = "text")
+```
+
+Among evaluated regulation plays where the model recommended going for it, decisions differed by score status and time remaining. Trailing teams declined approximately 73% of recommendations in the first half, compared with approximately 15% in the final five minutes. In contrast, teams that were tied or leading declined approximately 84% and 71%, respectively, in the final five minutes. These descriptive results suggest that teams followed go-for-it recommendations more frequently when trailing late in games.
+
+```{r}
+Team_Agreement <- Fourth_Down |>
+  filter(!is.na(posteam)) |>
+  group_by(posteam, season) |>
+  summarise(
+    Evaluated = sum(!is.na(Agreement)),
+    Agreed = sum(Agreement, na.rm = TRUE),
+    Agreement_Percent = if_else(
+      Evaluated > 0,
+      100 * Agreed / Evaluated,
+      NA_real_
+    ),
+    .groups = "drop"
+  )
+
+Team_Agreement |>
+  plotly::plot_ly(
+    x = ~season,
+    y = ~Agreement_Percent,
+    color = ~posteam,
+    type = "scatter",
+    mode = "lines+markers",
+    text = ~paste0(
+      "Team: ", posteam,
+      "<br>Season: ", season,
+      "<br>Evaluated decisions: ", Evaluated,
+      "<br>Agreed: ", Agreed,
+      "<br>Agreement: ", round(Agreement_Percent, 1), "%"
+    ),
+    hoverinfo = "text"
+  ) |>
+  plotly::layout(
+    title = list(
+      text = "Fourth-Down Agreement by Team, 2015–2025"
+    ),
+    xaxis = list(
+      title = "Season",
+      tickmode = "linear",
+      dtick = 1
+    ),
+    yaxis = list(
+      title = "Decisions Agreeing with the Model",
+      range = c(0, 100),
+      ticksuffix = "%"
+    ),
+    legend = list(title = list(text = "Team")),
+    hovermode = "closest"
+  )
+```
+Hover over points for details. Click a team in the legend to hide or show it; double-click to isolate it.
+
+```{r}
+Team_Overall <- Fourth_Down |>
+  filter(
+    !is.na(posteam),
+    !is.na(Agreement)
+  ) |>
+  group_by(posteam) |>
+  summarise(
+    Evaluated = n(),
+    Agreed = sum(Agreement),
+    Disagreed = sum(!Agreement),
+    Agreement_Percent = 100 * Agreed / Evaluated,
+    Disagreement_Percent = 100 * Disagreed / Evaluated,
+    .groups = "drop"
+  )
+
+Team_Overall |>
+  arrange(desc(Agreement_Percent))
+
+# Team with the highest agreement percentage
+Team_Overall |>
+  slice_max(Agreement_Percent, n = 1, with_ties = TRUE)
+
+# Team with the highest disagreement percentage
+Team_Overall |>
+  slice_max(Disagreement_Percent, n = 1, with_ties = TRUE)
+
+
+```
+
+The Cleveland Browns had the highest overall agreement with model recommendations, agreeing on 1,045 of 1,408 evaluated decisions (74.2%). The Dallas Cowboys had the lowest agreement, agreeing on 845 of 1,276 decisions (66.2%). The difference between the teams was approximately 8.0 percentage points. These rankings were not adjusted for differences in game situations.
+
+```{r}
+# How large were the model-estimated differences between the recommended and actual choices?
+
+WP_Differences <- Fourth_Down |>
+  filter(!is.na(Agreement)) |>
+  mutate(
+    WP_Gap = 100 * (Best_WP - Actual_WP)
+  )
+
+WP_Gap_Overall <- bind_rows(
+  WP_Differences |>
+    summarise(
+      Decisions = n(),
+      Mean_Gap = mean(WP_Gap),
+      Median_Gap = median(WP_Gap),
+      Percentile_90 = quantile(WP_Gap, 0.90),
+      Maximum_Gap = max(WP_Gap)
+    ) |>
+    mutate(Group = "All evaluated decisions", .before = 1),
+
+  WP_Differences |>
+    filter(!Agreement) |>
+    summarise(
+      Decisions = n(),
+      Mean_Gap = mean(WP_Gap),
+      Median_Gap = median(WP_Gap),
+      Percentile_90 = quantile(WP_Gap, 0.90),
+      Maximum_Gap = max(WP_Gap)
+    ) |>
+    mutate(Group = "Disagreements only", .before = 1)
+)
+
+# Formatted table for the report
+WP_Gap_Overall |>
+  gt::gt() |>
+  gt::fmt_number(
+    columns = c(Mean_Gap, Median_Gap, Percentile_90, Maximum_Gap),
+    decimals = 2
+  ) |>
+  gt::tab_header(
+    title = "Model-Estimated Win-Probability Differences",
+    subtitle = "Differences expressed in percentage points"
+  )
+
+WP_Gap_By_Season <- WP_Differences |>
+  group_by(season) |>
+  summarise(
+    Evaluated = n(),
+    Disagreements = sum(!Agreement),
+    Mean_Gap_All = mean(WP_Gap),
+    Mean_Gap_Disagreements = if_else(
+      Disagreements > 0,
+      mean(WP_Gap[!Agreement]),
+      NA_real_
+    ),
+    .groups = "drop"
+  )
+
+Gap_Plot <- ggplot(
+  WP_Gap_By_Season,
+  aes(
+    x = season,
+    y = Mean_Gap_All,
+    text = paste0(
+      "Season: ", season,
+      "<br>Evaluated decisions: ", Evaluated,
+      "<br>Disagreements: ", Disagreements,
+      "<br>Average gap, all decisions: ",
+      round(Mean_Gap_All, 2), " percentage points",
+      "<br>Average gap, disagreements only: ",
+      round(Mean_Gap_Disagreements, 2), " percentage points"
+    )
+  )
+) +
+  geom_line(color = "#013369", linewidth = 1) +
+  geom_point(color = "#013369", size = 2) +
+  scale_x_continuous(breaks = 2015:2025) +
+  expand_limits(y = 0) +
+  labs(
+    title = "How Far Were Actual Choices from Model Recommendations?",
+    subtitle = "Average difference across all evaluated decisions",
+    x = "Season",
+    y = "Estimated win-probability gap (percentage points)"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Gap_Plot, tooltip = "text")
+```
+
+Across all evaluated fourth-down decisions, the mean difference between the highest available model-estimated win probability and that of the actual choice was 0.39 percentage points. Among decisions that disagreed with the model, the mean difference was 1.28 percentage points and the median was 0.84. Although most disagreements involved relatively small estimated differences, the largest gap was 16.85 percentage points. The annual average across all evaluated decisions generally declined from approximately 0.48 percentage points in 2015 to 0.30 in 2025, with some year-to-year increases.
+
+```{r}
+# The declining average complements your finding of increasing agreement. It does not establish that disagreements themselves became smaller, because the average also falls when more decisions agree
+
+Disagreement_Gap_Plot <- ggplot(
+  WP_Gap_By_Season,
+  aes(
+    x = season,
+    y = Mean_Gap_Disagreements,
+    text = paste0(
+      "Season: ", season,
+      "<br>Disagreements: ", Disagreements,
+      "<br>Average gap: ",
+      round(Mean_Gap_Disagreements, 2),
+      " percentage points"
+    )
+  )
+) +
+  geom_line(color = "#013369", linewidth = 1, group = 1) +
+  geom_point(color = "#013369", size = 2) +
+  scale_x_continuous(breaks = 2015:2025) +
+  expand_limits(y = 0) +
+  labs(
+    title = "Did Fourth-Down Disagreements Become Smaller?",
+    subtitle = "Average model-estimated gap among disagreements only",
+    x = "Season",
+    y = "Estimated win-probability gap (percentage points)"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Disagreement_Gap_Plot, tooltip = "text")
+
+WP_Gap_By_Season |>
+  select(season, Disagreements, Mean_Gap_Disagreements) |>
+  gt::gt() |>
+  gt::cols_label(
+    season = "Season",
+    Disagreements = "Disagreements",
+    Mean_Gap_Disagreements = "Average gap (percentage points)"
+  ) |>
+  gt::fmt_number(
+    columns = Mean_Gap_Disagreements,
+    decimals = 2
+  )
+```
+
+Among evaluated fourth-down decisions that disagreed with the model, the average estimated win-probability gap generally declined between 2015 and 2025. The mean gap decreased from 1.40 percentage points in 2015 to 1.14 in 2025, although temporary increases occurred in several seasons, most noticeably in 2022. Together with the increase in overall agreement, these results indicate that teams followed model recommendations more frequently and that their disagreements involved smaller estimated gaps on average.
+
+```{r}
+# When teams declined a go-for-it recommendation, did they punt or attempt a field goal?
+
+Declined_Go <- Fourth_Down |>
+  filter(
+    Model_Decision == "going for it",
+    !is.na(Agreement),
+    Actual_Decision %in% c("punt", "field goal attempt")
+  )
+
+# Overall distribution of alternative choices
+Alternative_Choices <- Declined_Go |>
+  count(Actual_Decision, name = "Decisions") |>
+  mutate(
+    Percent = 100 * Decisions / sum(Decisions)
+  )
+
+Alternative_Choices |>
+  gt::gt() |>
+  gt::cols_label(
+    Actual_Decision = "Actual choice",
+    Percent = "Percentage"
+  ) |>
+  gt::fmt_number(columns = Percent, decimals = 1)
+
+Alternatives_By_Season <- Declined_Go |>
+  count(season, Actual_Decision, name = "Decisions") |>
+  group_by(season) |>
+  mutate(
+    Total_Declined = sum(Decisions),
+    Percent = 100 * Decisions / Total_Declined
+  ) |>
+  ungroup()
+
+Alternative_Plot <- ggplot(
+  Alternatives_By_Season,
+  aes(
+    x = factor(season),
+    y = Percent,
+    fill = Actual_Decision,
+    text = paste0(
+      "Season: ", season,
+      "<br>Actual choice: ", Actual_Decision,
+      "<br>Decisions: ", Decisions,
+      "<br>Total evaluated declines: ", Total_Declined,
+      "<br>Percentage: ", round(Percent, 1), "%"
+    )
+  )
+) +
+  geom_col() +
+  scale_fill_manual(
+    values = c(
+      "field goal attempt" = "#D55E00",
+      "punt" = "#0072B2"
+    )
+  ) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "What Did Teams Choose Instead of Going for It?",
+    subtitle = "Among evaluated plays where teams declined a go-for-it recommendation",
+    x = "Season",
+    y = "Percentage of declined recommendations",
+    fill = "Actual choice"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Alternative_Plot, tooltip = "text")
+```
+
+When teams declined a model recommendation to go for it, they punted on 73.6% of evaluated plays and attempted a field goal on 26.4%. Punting remained the more common alternative in every season from 2015 through 2025, accounting for approximately 70%–77% of declined recommendations annually. The distribution showed year-to-year variation without a clear sustained trend.
+
+```{r}
+# Were teams more likely to follow stronger go-for-it recommendations?
+Go_Strength <- Fourth_Down |>
+  filter(
+    Model_Decision == "going for it",
+    !is.na(Agreement),
+    is.finite(go_boost),
+    go_boost > 0
+  ) |>
+  mutate(
+    Recommendation_Strength = cut(
+      go_boost,
+      breaks = c(0, 0.5, 1, 2, 3, 5, Inf),
+      labels = c(
+        "0–0.5", ">0.5–1", ">1–2",
+        ">2–3", ">3–5", ">5"
+      )
+    )
+  )
+
+Strength_Summary <- Go_Strength |>
+  group_by(Recommendation_Strength, .drop = FALSE) |>
+  summarise(
+    Recommendations = n(),
+    Followed = sum(Actual_Decision == "going for it"),
+    Followed_Percent = if_else(
+      Recommendations > 0,
+      100 * Followed / Recommendations,
+      NA_real_
+    ),
+    .groups = "drop"
+  )
+
+Strength_Summary |>
+  gt::gt() |>
+  gt::cols_label(
+    Recommendation_Strength = "Estimated advantage (percentage points)",
+    Recommendations = "Evaluated recommendations",
+    Followed = "Went for it",
+    Followed_Percent = "Followed (%)"
+  ) |>
+  gt::fmt_number(columns = Followed_Percent, decimals = 1)
+
+Strength_Plot <- ggplot(
+  Strength_Summary,
+  aes(
+    x = Recommendation_Strength,
+    y = Followed_Percent,
+    text = paste0(
+      "Estimated advantage: ", Recommendation_Strength,
+      " percentage points",
+      "<br>Evaluated recommendations: ", Recommendations,
+      "<br>Went for it: ", Followed,
+      "<br>Followed: ", round(Followed_Percent, 1), "%"
+    )
+  )
+) +
+  geom_col(fill = "#013369") +
+  scale_y_continuous(
+    limits = c(0, 100),
+    labels = function(x) paste0(x, "%")
+  ) +
+  labs(
+    title = "Did Teams Follow Stronger Go-for-It Recommendations?",
+    subtitle = "Evaluated decisions pooled across 2015–2025",
+    x = "Estimated advantage of going for it (percentage points)",
+    y = "Recommendations followed"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Strength_Plot, tooltip = "text")
+```
+
+Teams were generally more likely to follow go-for-it recommendations when the model estimated a larger advantage over kicking. Recommendations with an advantage greater than five percentage points were followed on 79.5% of evaluated plays, compared with 32.2% for advantages of 0–0.5 percentage points. The relationship was not strictly increasing: agreement fell to 23.6% in the next category before rising across the remaining categories. These results suggest an association between recommendation strength and teams’ choices, although differences in game situations may contribute to the pattern.
+
+```{r}
+# Which teams changed their agreement the most over time?
+Team_Change <- Fourth_Down |>
+  filter(
+    !is.na(posteam),
+    !is.na(Agreement),
+    season %in% c(2015:2017, 2023:2025)
+  ) |>
+  mutate(
+    Period = if_else(season <= 2017, "Early", "Recent")
+  ) |>
+  group_by(posteam, Period) |>
+  summarise(
+    Evaluated = n(),
+    Agreement_Percent = 100 * mean(Agreement),
+    .groups = "drop"
+  ) |>
+  tidyr::pivot_wider(
+    names_from = Period,
+    values_from = c(Evaluated, Agreement_Percent)
+  ) |>
+  mutate(
+    Change_PP = Agreement_Percent_Recent -
+                Agreement_Percent_Early
+  ) |>
+  arrange(desc(Change_PP))
+
+# Five largest increases
+Team_Change |>
+  slice_max(Change_PP, n = 5, with_ties = TRUE)
+
+# Five largest decreases, or smallest increases if none declined
+Team_Change |>
+  slice_min(Change_PP, n = 5, with_ties = TRUE)
+
+# Five largest changes in either direction
+Team_Change |>
+  slice_max(abs(Change_PP), n = 5, with_ties = TRUE)
+
+Team_Change_Plot <- Team_Change |>
+  filter(!is.na(Change_PP)) |>
+  ggplot(
+    aes(
+      x = reorder(posteam, Change_PP),
+      y = Change_PP,
+      text = paste0(
+        "Team: ", posteam,
+        "<br>2015–2017 agreement: ",
+        round(Agreement_Percent_Early, 1), "%",
+        "<br>Evaluated: ", Evaluated_Early,
+        "<br>2023–2025 agreement: ",
+        round(Agreement_Percent_Recent, 1), "%",
+        "<br>Evaluated: ", Evaluated_Recent,
+        "<br>Change: ", round(Change_PP, 1),
+        " percentage points"
+      )
+    )
+  ) +
+  geom_col(fill = "#013369") +
+  geom_hline(yintercept = 0, color = "gray40") +
+  coord_flip() +
+  labs(
+    title = "Which Teams Changed Their Agreement Most?",
+    subtitle = "2023–2025 compared with 2015–2017",
+    x = "Team",
+    y = "Change in agreement (percentage points)"
+  ) +
+  theme_minimal()
+
+plotly::ggplotly(Team_Change_Plot, tooltip = "text")
+```
+
+Every team had higher agreement with model recommendations in 2023–2025 than in 2015–2017. Dallas recorded the largest increase, rising from 59.2% to 72.7%, followed by the New York Giants, whose agreement increased from 60.0% to 73.3%. Minnesota showed the smallest change, increasing from 69.0% to 69.3%. These comparisons pool evaluated decisions within each three-season period and do not adjust for differences in game situations.
+
+
+
